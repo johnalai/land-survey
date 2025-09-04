@@ -6,12 +6,10 @@
   <title>FieldPlot</title>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <!-- PWA Manifest -->
-<link rel="manifest" href="manifest.json">
-<!-- PWA Icons -->
-<link rel="icon" type="image/png" href="icon-192.png" sizes="192x192">
-<link rel="apple-touch-icon" href="icon-192.png">
-<!-- PWA Theme Color -->
-<meta name="theme-color" content="#1e88e5">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icon-192.png" sizes="192x192">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="theme-color" content="#1e88e5">
   <style>
     body, html { 
       margin: 0; 
@@ -113,6 +111,8 @@
       <button onclick="saveSurvey()" style="background:#4CAF50">💾 Save Survey</button>
       <button onclick="exportToPDF()" style="background:#607D8B">📄 Export to PDF</button>
     </div>
+
+    <button onclick="backupToCloud()" style="background:#4285F4; margin-top:10px">☁️ Backup to Google Drive</button>
 
     <div id="surveyList">
       <strong>Saved Surveys:</strong>
@@ -900,12 +900,26 @@
           y += 10;
         }
 
-        // Map screenshot (points only)
+        // Map screenshot (hide junk text)
         doc.setFontSize(12);
         doc.text("Map View (Points Only):", 20, y);
         y += 5;
 
         try {
+          // Hide elements that cause injection
+          const orig = {};
+          orig.display1 = document.getElementById("surveyList").style.display;
+          orig.display2 = document.getElementById("gpsMonitor").style.display;
+          document.getElementById("surveyList").style.display = "none";
+          document.getElementById("gpsMonitor").style.display = "none";
+
+          // Remove circles for clean capture
+          const tempCircles = [];
+          circles.forEach(c => {
+            tempCircles.push(c);
+            map.removeLayer(c);
+          });
+
           const mapElement = document.getElementById("map");
           const canvas = await html2canvas(mapElement, { 
             scale: 1, 
@@ -922,9 +936,16 @@
           }
 
           doc.addImage(imgData, 'JPEG', 20, y, imgWidth, imgHeight);
+          y += imgHeight + 5;
+
+          // Restore
+          document.getElementById("surveyList").style.display = orig.display1;
+          document.getElementById("gpsMonitor").style.display = orig.display2;
+          tempCircles.forEach(c => map.addLayer(c));
         } catch (e) {
           console.error("Map screenshot failed", e);
           doc.text("Map: Could not capture", 20, y);
+          y += 10;
         }
 
         doc.setFontSize(8);
@@ -942,6 +963,74 @@
       }
     }
 
+    // ✅ Backup to Google Drive
+    async function backupToCloud() {
+      if (points.length === 0) {
+        alert("❌ No points to backup.");
+        return;
+      }
+
+      const surveyName = document.getElementById("surveyName").value.trim() || `Field Survey ${new Date().toLocaleDateString()}`;
+      const surveyData = {
+        name: surveyName,
+        timestamp: new Date().toISOString(),
+        points: points.map(p => ({
+          lat: p.lat.toFixed(6),
+          lng: p.lng.toFixed(6),
+          type: p.type,
+          accuracy: p.accuracy?.toFixed(1),
+          altitude: p.altitude?.toFixed(1),
+          utm: latLngToUtm(p.lat, p.lng)
+        })),
+        distances: document.getElementById("distances").innerHTML,
+        area: calculateAreaForBackup()
+      };
+
+      try {
+        // ✅ FIXED: /execc → /exec
+        const response = await fetch('https://script.google.com/macros/s/AKfycbzpp3j6BhBw23wM_xLPu41Pxd3vntEUibqrLEHtp3Mh4ekyD5gCC_XD3YCP5UDgtME/exec', {
+          method: 'POST',
+          body: JSON.stringify(surveyData),
+          headers: { 'Content-Type': 'application/json' }
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+        }
+
+        const result = await response.json();
+        if (result.result === 'success') {
+          alert("✅ Backup saved to Google Drive!");
+        } else {
+          alert("❌ Backup failed: " + (result.error || "Unknown error"));
+        }
+      } catch (e) {
+        console.error("Backup failed", e);
+        alert(`📶 Backup failed: ${e.message}
+
+💡 Check:
+1. Internet connection
+2. Ad blocker (disable it)
+3. Apps Script deployed correctly`);
+      }
+    }
+
+    function calculateAreaForBackup() {
+      try {
+        const utmPoints = points.map(p => latLngToUtm(p.lat, p.lng));
+        let area = 0;
+        const n = utmPoints.length;
+        for (let i = 0; i < n; i++) {
+          const j = (i + 1) % n;
+          area += utmPoints[i].easting * utmPoints[j].northing;
+          area -= utmPoints[j].easting * utmPoints[i].northing;
+        }
+        return (Math.abs(area) / 2 * 0.000247105).toFixed(3); // acres
+      } catch {
+        return "unknown";
+      }
+    }
+
     // ✅ Init
     window.addEventListener('load', () => {
       setTimeout(() => {
@@ -955,15 +1044,16 @@
       }, 500);
     });
   </script>
+
   <!-- PWA Service Worker -->
-<script>
-  if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('service-worker.js')
-        .then(reg => console.log('SW registered: ', reg))
-        .catch(err => console.log('SW registration failed: ', err));
-    });
-  }
-</script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js')
+          .then(reg => console.log('SW registered: ', reg))
+          .catch(err => console.log('SW registration failed: ', err));
+      });
+    }
+  </script>
 </body>
 </html>
