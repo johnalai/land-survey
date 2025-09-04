@@ -1,0 +1,969 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>FieldPlot</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- PWA Manifest -->
+<link rel="manifest" href="manifest.json">
+<!-- PWA Icons -->
+<link rel="icon" type="image/png" href="icon-192.png" sizes="192x192">
+<link rel="apple-touch-icon" href="icon-192.png">
+<!-- PWA Theme Color -->
+<meta name="theme-color" content="#1e88e5">
+  <style>
+    body, html { 
+      margin: 0; 
+      font-family: Arial, sans-serif; 
+      background: #f8f9fa; 
+      height: 100%;
+      overflow: hidden;
+    }
+    #map { 
+      height: 60vh; 
+      width: 100%; 
+      background: #ddd; 
+    }
+    .controls {
+      padding: 1rem;
+      text-align: center;
+      background: white;
+      border-top: 1px solid #eee;
+      max-height: 40vh;
+      overflow-y: auto;
+    }
+    button {
+      padding: 12px 20px;
+      margin: 5px;
+      font-size: 1rem;
+      background: #1e88e5;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .result {
+      font-size: 1.2rem;
+      font-weight: bold;
+      margin: 1rem 0;
+    }
+    .distances {
+      font-size: 0.9rem;
+      color: #555;
+      margin: 1rem 0;
+      text-align: left;
+      max-height: 120px;
+      overflow-y: auto;
+      padding: 0 1rem;
+    }
+    #gpsMonitor {
+      font-size: 0.9rem;
+      color: #555;
+      margin: 1rem 0;
+      padding: 0.5rem;
+      background: #f0f0f0;
+      border-radius: 6px;
+      text-align: left;
+    }
+    #infoPanel {
+      font-size: 0.9rem;
+      color: #333;
+      margin: 1rem 0;
+      padding: 0.8rem;
+      background: #f0f8ff;
+      border-radius: 6px;
+      text-align: left;
+      display: none;
+      border: 1px solid #b3d9ff;
+    }
+    #surveyList {
+      font-size: 0.95rem;
+      text-align: left;
+      margin: 1rem 0;
+      padding: 0 1rem;
+    }
+    .survey-item {
+      padding: 0.6rem;
+      margin: 0.3rem 0;
+      background: #f9f9f9;
+      border-left: 4px solid #1e88e5;
+      border-radius: 4px;
+    }
+    .survey-item button {
+      padding: 4px 8px;
+      font-size: 0.8rem;
+      margin-left: 8px;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div class="controls">
+    <button onclick="addPoint()">📍 Add GPS Point (A,B,C)</button>
+    <button onclick="startMapAdd()" style="background:#E91E63">🟢 Add Manual Point (M1,M2)</button>
+    <button onclick="startGPSMonitor()" style="background:#9C27B0">📡 Monitor GPS</button>
+    <button onclick="calculateArea()">📐 Calculate Area</button>
+    <button onclick="clearAll()">🗑️ Clear All</button>
+
+    <div>
+      <input type="text" id="surveyName" placeholder="Enter survey name" style="padding:8px; width:180px;">
+      <button onclick="saveSurvey()" style="background:#4CAF50">💾 Save Survey</button>
+      <button onclick="exportToPDF()" style="background:#607D8B">📄 Export to PDF</button>
+    </div>
+
+    <div id="surveyList">
+      <strong>Saved Surveys:</strong>
+      <em>Loading...</em>
+    </div>
+
+    <div class="result" id="result">Allow location or use manual mode.</div>
+    <div id="gpsMonitor">GPS Monitor: Stopped</div>
+    <div id="infoPanel">
+      <strong>📍 Location Info</strong>
+      <span id="infoContent"></span>
+    </div>
+    <div class="distances" id="distances"></div>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <!-- PDF Libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script>
+    // ✅ EMBEDDED UTM
+    function latLngToUtm(lat, lng) {
+      const zone = Math.floor((lng + 180) / 6) + 1;
+      const LongOrigin = (zone - 1) * 6 - 180 + 3;
+      const eccPrimeSquared = 0.006739496742337;
+      const N = 6378137 / Math.sqrt(1 - 0.00669438 * Math.pow(Math.cos(lat * Math.PI / 180), 2));
+      const T = Math.pow(Math.tan(lat * Math.PI / 180), 2);
+      const C = eccPrimeSquared * Math.pow(Math.cos(lat * Math.PI / 180), 2);
+      const A = (lng - LongOrigin) * Math.PI / 180 * Math.cos(lat * Math.PI / 180);
+      const M = 6378137 * (0.9996 * (lat * Math.PI / 180 - 0.0050546225564569 * Math.sin(2 * lat * Math.PI / 180) + 0.00002322191181 * Math.sin(4 * lat * Math.PI / 180)));
+      const UTMEasting = 0.9996 * N * (A + (1 - T + C) * Math.pow(A, 3)/6) + 500000;
+      let UTMNorthing = M + 0.9996 * N * Math.tan(lat * Math.PI / 180) * (Math.pow(A, 2)/2);
+      if (lat < 0) UTMNorthing += 10000000;
+      return { easting: UTMEasting, northing: UTMNorthing, zone: zone };
+    }
+
+    // Bearing between two points
+    function getBearing(lat1, lon1, lat2, lon2) {
+      lat1 = lat1 * Math.PI / 180;
+      lon1 = lon1 * Math.PI / 180;
+      lat2 = lat2 * Math.PI / 180;
+      lon2 = lon2 * Math.PI / 180;
+
+      const y = Math.sin(lon2 - lon1) * Math.cos(lat2);
+      const x = Math.cos(lat1) * Math.sin(lat2) -
+                Math.sin(lat1) * Math.cos(lat2) * Math.cos(lon2 - lon1);
+      let brng = Math.atan2(y, x) * 180 / Math.PI;
+      brng = (brng + 360) % 360;
+      return brng;
+    }
+
+    // Format bearing as D°M'S"
+    function formatBearing(degrees) {
+      const d = Math.floor(degrees);
+      const m = Math.floor((degrees - d) * 60);
+      const s = Math.round(((degrees - d) * 3600) % 60);
+      return `${d}°${m}'${s}"`;
+    }
+
+    // Format distance with 2 decimals
+    function formatDistance(meters) {
+      return meters.toFixed(2);
+    }
+
+    // Haversine distance
+    function distance(lat1, lon1, lat2, lon2) {
+      lat1 = parseFloat(lat1); lon1 = parseFloat(lon1);
+      lat2 = parseFloat(lat2); lon2 = parseFloat(lon2);
+      if (isNaN(lat1) || isNaN(lon1) || isNaN(lat2) || isNaN(lon2)) return 0;
+      const R = 6371e3;
+      const φ1 = lat1 * Math.PI / 180;
+      const φ2 = lat2 * Math.PI / 180;
+      const Δφ = (lat2 - lat1) * Math.PI / 180;
+      const Δλ = (lon2 - lon1) * Math.PI / 180;
+      const a = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+      return R * c;
+    }
+
+    function updateDistances() {
+      const list = document.getElementById("distances");
+      if (points.length < 2) {
+        list.innerHTML = "";
+        return;
+      }
+      let html = "<strong>Side Lengths & Bearings:</strong><br>";
+      for (let i = 0; i < points.length - 1; i++) {
+        const d = distance(points[i].lat, points[i].lng, points[i+1].lat, points[i+1].lng);
+        const b = getBearing(points[i].lat, points[i].lng, points[i+1].lat, points[i+1].lng);
+        const fb = formatBearing(b);
+        const label1 = points[i].type === 'field' ? String.fromCharCode(65 + i) : `M${i+1}`;
+        const label2 = points[i+1].type === 'field' ? String.fromCharCode(65 + i+1) : `M${i+2}`;
+        html += `${label1}-${label2}: ${formatDistance(d)}m @ ${fb}<br>`;
+      }
+      if (points.length >= 3) {
+        const last = points[points.length-1];
+        const first = points[0];
+        const d = distance(last.lat, last.lng, first.lat, first.lng);
+        const b = getBearing(last.lat, last.lng, first.lat, first.lng);
+        const fb = formatBearing(b);
+        const lastLabel = points[points.length-1].type === 'field' 
+          ? String.fromCharCode(65 + points.length - 1) 
+          : `M${points.length}`;
+        html += `${lastLabel}-A: ${formatDistance(d)}m @ ${fb} (closing)<br>`;
+      }
+      list.innerHTML = html;
+    }
+
+    // App state
+    let map, markers = [], circles = [];
+    const points = [];
+    let awaitingManualClick = false;
+    let gpsWatchId = null;
+
+    // ✅ Clean circular icons — no white halo
+    function createFieldIcon(letter) {
+      return L.divIcon({
+        html: `<div style="
+          width: 24px;
+          height: 24px;
+          background: #1e88e5;
+          color: white;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          font-weight: bold;
+        ">${letter}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        className: ''
+      });
+    }
+
+    function createManualIcon(id) {
+      return L.divIcon({
+        html: `<div style="
+          width: 24px;
+          height: 24px;
+          background: #E91E63;
+          color: white;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          font-weight: bold;
+        ">M${id}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        className: ''
+      });
+    }
+
+    // Initialize map — ✅ High zoom enabled
+    function initMap() {
+      if (map) map.remove();
+      
+      map = L.map('map', {
+        center: [51.119, -114.25],
+        zoom: 17,
+        maxZoom: 20,
+        minZoom: 6
+      });
+
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: 'Esri',
+        maxZoom: 20,
+        errorTileUrl: 'image/gif;base64,R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw=='
+      }).addTo(map);
+
+      map.on('click', onMapClick);
+
+      setTimeout(() => map.invalidateSize(), 500);
+      setTimeout(() => map.invalidateSize(), 1000);
+
+      document.getElementById("result").innerHTML = "✅ Map loaded. Tap to add points.";
+    }
+
+    // ✅ Averaged GPS (20 seconds)
+    function getAveragedGPS(callback, duration = 20000) {
+      const positions = [];
+      let watchId;
+
+      document.getElementById("result").innerHTML = "📡 Collecting GPS for 20s (improving accuracy)...";
+
+      watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude, longitude, accuracy, altitude } = pos.coords;
+          if (accuracy < 50) {
+            positions.push({ lat: latitude, lng: longitude, accuracy, altitude });
+          }
+        },
+        (err) => {
+          navigator.geolocation.clearWatch(watchId);
+          callback(null, err.message);
+        },
+        { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 }
+      );
+
+      setTimeout(() => {
+        navigator.geolocation.clearWatch(watchId);
+        if (positions.length === 0) {
+          callback(null, "No GPS data collected");
+          return;
+        }
+
+        let sumLat = 0, sumLng = 0, sumAlt = 0, sumWeight = 0;
+        positions.forEach(p => {
+          const weight = 1 / (p.accuracy * p.accuracy);
+          sumLat += p.lat * weight;
+          sumLng += p.lng * weight;
+          if (p.altitude !== null && !isNaN(p.altitude)) sumAlt += p.altitude * weight;
+          sumWeight += weight;
+        });
+
+        const avgLat = sumLat / sumWeight;
+        const avgLng = sumLng / sumWeight;
+        const avgAccuracy = sumWeight / positions.length;
+        const avgAltitude = sumAlt / sumWeight;
+
+        callback({
+          lat: avgLat,
+          lng: avgLng,
+          accuracy: avgAccuracy,
+          altitude: avgAltitude
+        });
+      }, duration);
+    }
+
+    // ✅ Add GPS point — ✅ Center map on new point
+    function addPoint() {
+      if (!map) return;
+      getAveragedGPS((pos, error) => {
+        if (!pos) {
+          alert(`❌ GPS failed: ${error}`);
+          document.getElementById("result").innerHTML = `❌ GPS failed: ${error}`;
+          return;
+        }
+
+        if (points.length > 0) {
+          const last = points[points.length - 1];
+          const dist = distance(pos.lat, pos.lng, last.lat, last.lng);
+          if (dist < 5) {
+            alert(`⚠️ Too close to last point (${dist.toFixed(1)}m). Move farther.`);
+            document.getElementById("result").innerHTML = "⚠️ Too close.";
+            return;
+          }
+        }
+
+        const id = points.filter(p => p.type === 'field').length;
+        const letter = String.fromCharCode(65 + id);
+        points.push({ lat: pos.lat, lng: pos.lng, accuracy: pos.accuracy, altitude: pos.altitude, type: 'field', id });
+
+        const marker = L.marker([pos.lat, pos.lng], { icon: createFieldIcon(letter), draggable: true }).addTo(map);
+        const circle = L.circle([pos.lat, pos.lng], {
+          radius: pos.accuracy,
+          color: '#4CAF50',
+          fillColor: '#4CAF50',
+          fillOpacity: 0.2,
+          weight: 2
+        }).addTo(map);
+        markers.push(marker);
+        circles.push(circle);
+
+        marker.on('dragend', (e) => {
+          const { lat, lng } = e.target.getLatLng();
+          const index = markers.indexOf(marker);
+          if (index !== -1) {
+            points[index].lat = lat;
+            points[index].lng = lng;
+            circle.setLatLng([lat, lng]);
+            updateDistances();
+            showInfo(lat, lng, points[index].accuracy, points[index].altitude);
+          }
+        });
+
+        marker.on('click', () => {
+          if (confirm(`Delete Point ${letter}?`)) deletePoint(markers.indexOf(marker));
+        });
+
+        map.setView([pos.lat, pos.lng], 18);
+
+        updateDistances();
+        document.getElementById("result").innerHTML = 
+          `✅ Point ${letter} added<br>
+           📏 Avg Accuracy: ${pos.accuracy.toFixed(1)}m (20s average)<br>
+           🏔️ ${pos.altitude ? `Alt: ${pos.altitude.toFixed(1)}m` : ''}`;
+
+        showInfo(pos.lat, pos.lng, pos.accuracy, pos.altitude);
+      }, 20000);
+    }
+
+    // ✅ Show location info
+    function showInfo(lat, lng, accuracy = null, altitude = null) {
+      const infoPanel = document.getElementById("infoPanel");
+      const infoContent = document.getElementById("infoContent");
+
+      const utm = latLngToUtm(lat, lng);
+      const zone = utm.zone;
+      const hemi = lat >= 0 ? 'N' : 'S';
+      const easting = utm.easting.toFixed(1);
+      const northing = utm.northing.toFixed(1);
+
+      let html = `Lat: ${lat.toFixed(6)}<br>Lng: ${lng.toFixed(6)}`;
+      if (accuracy !== null) html += `<br>📏 Accuracy: ${accuracy.toFixed(1)}m`;
+      if (altitude !== null) html += `<br>🏔️ Elevation: ${altitude.toFixed(1)}m`;
+      html += `<br>🧭 UTM: ${zone}${hemi} ${easting} E ${northing} N`;
+
+      infoContent.innerHTML = html;
+      infoPanel.style.display = "block";
+    }
+
+    // ✅ GPS Monitor
+    function startGPSMonitor() {
+      if (gpsWatchId) {
+        navigator.geolocation.clearWatch(gpsWatchId);
+        gpsWatchId = null;
+        document.getElementById("gpsMonitor").innerHTML = "GPS Monitor: Stopped";
+        return;
+      }
+
+      document.getElementById("gpsMonitor").innerHTML = "📡 Monitoring GPS...";
+
+      gpsWatchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          const { latitude, longitude, accuracy, altitude, heading, speed } = pos.coords;
+          const time = new Date().toLocaleTimeString();
+          document.getElementById("gpsMonitor").innerHTML = `
+            📡 <strong>Live GPS</strong> (${time})<br>
+            📍 Lat: ${latitude.toFixed(6)}<br>
+            🧭 Lng: ${longitude.toFixed(6)}<br>
+            🎯 Accuracy: ${accuracy.toFixed(1)}m<br>
+            ${altitude ? `🏔️ Altitude: ${altitude.toFixed(1)}m<br>` : ''}
+            ${heading ? `🧭 Heading: ${heading.toFixed(0)}° ` : ''}
+            ${speed ? `🚶 Speed: ${(speed * 3.6).toFixed(1)} km/h` : ''}
+          `;
+        },
+        (err) => {
+          document.getElementById("gpsMonitor").innerHTML = `❌ GPS Error: ${err.message}`;
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }
+
+    // Manual point
+    function startMapAdd() {
+      awaitingManualClick = true;
+      document.getElementById("result").innerHTML = "🖱️ Tap the map to place a point.";
+    }
+
+    function onMapClick(e) {
+      if (!awaitingManualClick) {
+        const { lat, lng } = e.latlng;
+        showInfo(lat, lng);
+        return;
+      }
+
+      const { lat, lng } = e.latlng;
+      const id = points.filter(p => p.type === 'manual').length + 1;
+      points.push({ lat, lng, type: 'manual', id });
+
+      const marker = L.marker([lat, lng], { icon: createManualIcon(id), draggable: true }).addTo(map);
+      const circle = L.circle([lat, lng], { radius: 10, color: '#E91E63', fillOpacity: 0.2 }).addTo(map);
+      markers.push(marker);
+      circles.push(circle);
+
+      marker.on('dragend', (e) => {
+        const { lat, lng } = e.target.getLatLng();
+        const index = markers.indexOf(marker);
+        if (index !== -1) {
+          points[index].lat = lat;
+          points[index].lng = lng;
+          circle.setLatLng([lat, lng]);
+          updateDistances();
+          showInfo(lat, lng);
+        }
+      });
+
+      marker.on('click', () => {
+        if (confirm(`Delete Manual Point M${id}?`)) deletePoint(markers.indexOf(marker));
+      });
+
+      awaitingManualClick = false;
+      updateDistances();
+      document.getElementById("result").innerHTML = `✅ Manual Point M${id} added`;
+      showInfo(lat, lng);
+    }
+
+    // Delete point
+    function deletePoint(index) {
+      if (index === -1 || !points[index]) return;
+      map.removeLayer(markers[index]);
+      map.removeLayer(circles[index]);
+      points.splice(index, 1);
+      markers.splice(index, 1);
+      circles.splice(index, 1);
+      updateDistances();
+      document.getElementById("result").innerHTML = "🗑️ Point deleted";
+    }
+
+    // Calculate area
+    function calculateArea() {
+      if (points.length < 3) {
+        document.getElementById("result").innerHTML = "❌ Need 3+ points.";
+        return;
+      }
+      try {
+        const utmPoints = points.map(p => latLngToUtm(p.lat, p.lng));
+        let area = 0;
+        const n = utmPoints.length;
+        for (let i = 0; i < n; i++) {
+          const j = (i + 1) % n;
+          area += utmPoints[i].easting * utmPoints[j].northing;
+          area -= utmPoints[j].easting * utmPoints[i].northing;
+        }
+        area = Math.abs(area) / 2;
+        const acres = area * 0.000247105;
+        document.getElementById("result").innerHTML = `📏 Area: <strong>${acres.toFixed(3)} acres</strong>`;
+      } catch (e) {
+        document.getElementById("result").innerHTML = "❌ Calculation failed.";
+      }
+    }
+
+    // ✅ Fallback Storage
+    const storage = (() => {
+      const testKey = 'test_storage';
+      try {
+        window.localStorage.setItem(testKey, '1');
+        window.localStorage.removeItem(testKey);
+        return window.localStorage;
+      } catch (e) {
+        console.warn("localStorage blocked, using memory");
+        const mem = {};
+        return {
+          getItem: k => mem[k] || null,
+          setItem: (k, v) => { mem[k] = v; },
+          removeItem: k => delete mem[k]
+        };
+      }
+    })();
+
+    // ✅ Save current survey
+    function saveSurvey() {
+      const nameInput = document.getElementById("surveyName");
+      let name = nameInput.value.trim();
+
+      if (!name) {
+        const now = new Date();
+        const dateStr = now.toLocaleDateString().replace(/\//g, '-');
+        const timeStr = now.toLocaleTimeString().replace(/:/g, '-');
+        name = `Survey ${dateStr} ${timeStr}`;
+      }
+
+      const timestamp = new Date().toLocaleString();
+
+      let area = null;
+      if (points.length >= 3) {
+        try {
+          const utmPoints = points.map(p => latLngToUtm(p.lat, p.lng));
+          let a = 0;
+          const n = utmPoints.length;
+          for (let i = 0; i < n; i++) {
+            const j = (i + 1) % n;
+            a += utmPoints[i].easting * utmPoints[j].northing;
+            a -= utmPoints[j].easting * utmPoints[i].northing;
+          }
+          area = (Math.abs(a) / 2) * 0.000247105;
+        } catch (e) {}
+      }
+
+      const surveyData = {
+        name: name,
+        points: points.map(p => ({
+          lat: +p.lat.toFixed(8),
+          lng: +p.lng.toFixed(8),
+          accuracy: p.accuracy,
+          altitude: p.altitude,
+          type: p.type,
+          id: p.id
+        })),
+        timestamp: timestamp,
+        area: area,
+        pointCount: points.length
+      };
+
+      try {
+        let surveys = JSON.parse(storage.getItem("landSurveys") || "[]");
+        const index = surveys.findIndex(s => s.name === name);
+        if (index > -1) {
+          if (!confirm(`Survey "${name}" exists. Overwrite?`)) return;
+          surveys[index] = surveyData;
+        } else {
+          surveys.push(surveyData);
+        }
+        storage.setItem("landSurveys", JSON.stringify(surveys));
+        nameInput.value = '';
+        loadSurveyList();
+        alert(`✅ Saved "${name}" with ${points.length} points`);
+      } catch (e) {
+        alert("❌ Save failed: " + e.message);
+      }
+    }
+
+    // ✅ Load survey list
+    function loadSurveyList() {
+      const list = document.getElementById("surveyList");
+      list.innerHTML = "<strong>Saved Surveys:</strong>";
+
+      try {
+        const surveys = JSON.parse(storage.getItem("landSurveys") || "[]");
+        if (surveys.length === 0) {
+          list.innerHTML += "<br><em>No saved surveys</em>";
+          return;
+        }
+
+        surveys.forEach(survey => {
+          const item = document.createElement("div");
+          item.className = "survey-item";
+          item.innerHTML = `
+            <strong>${survey.name}</strong><br>
+            📏 ${survey.pointCount} pts | 
+            ${survey.area ? `📐 ${survey.area.toFixed(3)} acres | ` : ''}
+            📅 ${survey.timestamp}
+            <br>
+            <button onclick="loadSurvey('${survey.name.replace(/'/g, "\\'")}')">🔁 Load</button>
+            <button onclick="deleteSurvey('${survey.name.replace(/'/g, "\\'")}')" style="background:#f44336">🗑️ Delete</button>
+          `;
+          list.appendChild(item);
+        });
+      } catch (e) {
+        list.innerHTML += "<br><em>Error loading surveys</em>";
+        console.error("Load survey list failed", e);
+      }
+    }
+
+    // ✅ Load a survey
+    function loadSurvey(name) {
+      try {
+        const surveys = JSON.parse(storage.getItem("landSurveys") || "[]");
+        const survey = surveys.find(s => s.name === name);
+        if (!survey) {
+          alert("❌ Survey not found.");
+          return;
+        }
+
+        if (points.length > 0 && !confirm("Current points will be cleared. Continue?")) return;
+
+        clearAllNoSave();
+
+        survey.points.forEach(p => {
+          if (isNaN(p.lat) || isNaN(p.lng)) return;
+          points.push(p);
+          if (p.type === 'field') {
+            const letter = String.fromCharCode(65 + p.id);
+            const marker = L.marker([p.lat, p.lng], { icon: createFieldIcon(letter), draggable: true }).addTo(map);
+            const circle = L.circle([p.lat, p.lng], {
+              radius: p.accuracy,
+              color: '#4CAF50',
+              fillColor: '#4CAF50',
+              fillOpacity: 0.2,
+              weight: 2
+            }).addTo(map);
+            markers.push(marker);
+            circles.push(circle);
+
+            marker.on('dragend', (e) => {
+              const { lat, lng } = e.target.getLatLng();
+              const index = markers.indexOf(marker);
+              if (index !== -1) {
+                points[index].lat = lat;
+                points[index].lng = lng;
+                circle.setLatLng([lat, lng]);
+                updateDistances();
+                showInfo(lat, lng, p.accuracy, p.altitude);
+              }
+            });
+
+            marker.on('click', () => {
+              if (confirm(`Delete Point ${letter}?`)) deletePoint(markers.indexOf(marker));
+            });
+          } else {
+            const marker = L.marker([p.lat, p.lng], { icon: createManualIcon(p.id), draggable: true }).addTo(map);
+            const circle = L.circle([p.lat, p.lng], { radius: 10, color: '#E91E63', fillOpacity: 0.2 }).addTo(map);
+            markers.push(marker);
+            circles.push(circle);
+
+            marker.on('dragend', (e) => {
+              const { lat, lng } = e.target.getLatLng();
+              const index = markers.indexOf(marker);
+              if (index !== -1) {
+                points[index].lat = lat;
+                points[index].lng = lng;
+                circle.setLatLng([lat, lng]);
+                updateDistances();
+                showInfo(lat, lng);
+              }
+            });
+
+            marker.on('click', () => {
+              if (confirm(`Delete Manual Point M${p.id}?`)) deletePoint(markers.indexOf(marker));
+            });
+          }
+        });
+
+        updateDistances();
+        document.getElementById("result").innerHTML = `✅ Loaded "${name}"<br><small>${survey.points.length} points</small>`;
+      } catch (e) {
+        alert("❌ Load failed");
+        console.error("Load survey failed", e);
+      }
+    }
+
+    // ✅ Delete a survey
+    function deleteSurvey(name) {
+      if (confirm(`Delete survey "${name}"?`)) {
+        try {
+          let surveys = JSON.parse(storage.getItem("landSurveys") || "[]");
+          surveys = surveys.filter(s => s.name !== name);
+          storage.setItem("landSurveys", JSON.stringify(surveys));
+          loadSurveyList();
+        } catch (e) {
+          alert("❌ Delete failed");
+        }
+      }
+    }
+
+    // ✅ Clear without saving empty
+    function clearAllNoSave() {
+      points.length = 0;
+      markers.forEach(m => map.removeLayer(m));
+      circles.forEach(c => map.removeLayer(c));
+      markers = [];
+      circles = [];
+      document.getElementById("distances").innerHTML = "";
+      document.getElementById("infoPanel").style.display = "none";
+    }
+
+    // ✅ Clear All
+    function clearAll() {
+      if (points.length === 0) return;
+      if (confirm(`Delete ${points.length} points?`)) {
+        clearAllNoSave();
+        document.getElementById("result").innerHTML = "🗑️ Cleared";
+      }
+    }
+
+    // ✅ Export to PDF
+    async function exportToPDF() {
+      if (points.length === 0) {
+        alert("❌ No points to export. Add at least one point first.");
+        return;
+      }
+
+      const surveyName = document.getElementById("surveyName").value.trim() || `Field Survey ${new Date().toLocaleDateString()}`;
+      document.getElementById("result").innerHTML = "📄 Preparing PDF...";
+
+      try {
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF('p', 'mm', 'a4');
+        const pageWidth = doc.internal.pageSize.width;
+        const pageHeight = doc.internal.pageSize.height;
+        let y = 20;
+
+        doc.setFontSize(20);
+        doc.setTextColor(0, 60, 120);
+        doc.text(surveyName, pageWidth / 2, y, { align: 'center' });
+        y += 10;
+
+        doc.setFontSize(12);
+        doc.setTextColor(80, 80, 80);
+        doc.text(`Generated on: ${new Date().toLocaleString()}`, pageWidth / 2, y, { align: 'center' });
+        y += 15;
+
+        if (points.length >= 3) {
+          try {
+            const utmPoints = points.map(p => latLngToUtm(p.lat, p.lng));
+            let area = 0;
+            const n = utmPoints.length;
+            for (let i = 0; i < n; i++) {
+              const j = (i + 1) % n;
+              area += utmPoints[i].easting * utmPoints[j].northing;
+              area -= utmPoints[j].easting * utmPoints[i].northing;
+            }
+            area = Math.abs(area) / 2;
+            const acres = area * 0.000247105;
+            doc.setFontSize(14);
+            doc.text(`Area: ${acres.toFixed(3)} acres (${area.toFixed(1)} m²)`, 20, y);
+            y += 10;
+          } catch (e) {
+            doc.text("Area: Calculation failed", 20, y);
+            y += 10;
+          }
+        }
+
+        // Table header
+        doc.setFontSize(12);
+        doc.text("Survey Points:", 20, y);
+        y += 8;
+
+        doc.setFontSize(10);
+        doc.setFillColor(240, 240, 240);
+        doc.rect(20, y, 170, 8, 'F');
+        doc.setTextColor(0, 0, 0);
+        doc.text("Point", 25, y + 6);
+        doc.text("Latitude", 55, y + 6);
+        doc.text("Longitude", 85, y + 6);
+        doc.text("UTM", 115, y + 6);
+        doc.text("Acc (m)", 155, y + 6);
+        y += 10;
+
+        // Points
+        doc.setFontSize(9);
+        doc.setTextColor(50, 50, 50);
+        points.forEach((p, i) => {
+          const letter = p.type === 'field' ? String.fromCharCode(65 + p.id) : `M${p.id}`;
+          const utm = latLngToUtm(p.lat, p.lng);
+          const zone = utm.zone;
+          const hemi = p.lat >= 0 ? 'N' : 'S';
+          const easting = utm.easting.toFixed(1);
+          const northing = utm.northing.toFixed(1);
+          const utmStr = `${zone}${hemi} ${easting} E ${northing} N`;
+
+          if (y > 270) {
+            doc.addPage();
+            y = 20;
+          }
+
+          doc.text(letter, 25, y);
+          doc.text(p.lat.toFixed(6), 55, y);
+          doc.text(p.lng.toFixed(6), 85, y);
+          doc.text(utmStr, 115, y);
+          doc.text(p.accuracy ? p.accuracy.toFixed(1) : 'N/A', 155, y);
+          y += 8;
+        });
+
+        y += 10;
+        if (y > 270) {
+          doc.addPage();
+          y = 20;
+        }
+
+        // Side lengths & bearings
+        doc.setFontSize(12);
+        doc.text("Side Lengths & Bearings:", 20, y);
+        y += 8;
+
+        doc.setFontSize(10);
+        points.forEach((p, i) => {
+          if (i === points.length - 1) return;
+          const next = points[i + 1];
+          const d = distance(p.lat, p.lng, next.lat, next.lng);
+          const b = getBearing(p.lat, p.lng, next.lat, next.lng);
+          const fb = formatBearing(b);
+          const label1 = points[i].type === 'field' ? String.fromCharCode(65 + i) : `M${i+1}`;
+          const label2 = points[i+1].type === 'field' ? String.fromCharCode(65 + i+1) : `M${i+2}`;
+
+          if (y > 270) {
+            doc.addPage();
+            y = 20;
+          }
+
+          doc.text(`${label1}-${label2}: ${formatDistance(d)}m @ ${fb}`, 25, y);
+          y += 6;
+        });
+
+        if (points.length >= 3) {
+          const last = points[points.length - 1];
+          const first = points[0];
+          const d = distance(last.lat, last.lng, first.lat, first.lng);
+          const b = getBearing(last.lat, last.lng, first.lat, first.lng);
+          const fb = formatBearing(b);
+          const lastLabel = points[points.length-1].type === 'field' 
+            ? String.fromCharCode(65 + points.length - 1) 
+            : `M${points.length}`;
+
+          if (y > 270) {
+            doc.addPage();
+            y = 20;
+          }
+
+          doc.text(`${lastLabel}-A: ${formatDistance(d)}m @ ${fb} (closing)`, 25, y);
+          y += 10;
+        }
+
+        // Map screenshot (points only)
+        doc.setFontSize(12);
+        doc.text("Map View (Points Only):", 20, y);
+        y += 5;
+
+        try {
+          const mapElement = document.getElementById("map");
+          const canvas = await html2canvas(mapElement, { 
+            scale: 1, 
+            useCORS: true, 
+            backgroundColor: '#ddd' 
+          });
+          const imgData = canvas.toDataURL("image/jpeg", 0.8);
+          const imgWidth = 170;
+          const imgHeight = (canvas.height * imgWidth) / canvas.width;
+
+          if (y + imgHeight > pageHeight - 20) {
+            doc.addPage();
+            y = 20;
+          }
+
+          doc.addImage(imgData, 'JPEG', 20, y, imgWidth, imgHeight);
+        } catch (e) {
+          console.error("Map screenshot failed", e);
+          doc.text("Map: Could not capture", 20, y);
+        }
+
+        doc.setFontSize(8);
+        doc.setTextColor(150, 150, 150);
+        doc.text("Generated with FieldPlot", pageWidth / 2, 290, { align: 'center' });
+
+        doc.save(`${surveyName.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.pdf`);
+        
+        document.getElementById("result").innerHTML = `✅ PDF exported: ${surveyName}.pdf`;
+        alert(`✅ Success! PDF saved as: ${surveyName}.pdf`);
+      } catch (e) {
+        console.error("PDF Export failed", e);
+        document.getElementById("result").innerHTML = "❌ PDF export failed.";
+        alert(`❌ Export failed: ${e.message}\n\nTip: Disable ad blockers.`);
+      }
+    }
+
+    // ✅ Init
+    window.addEventListener('load', () => {
+      setTimeout(() => {
+        if (typeof L === 'undefined') {
+          document.getElementById("result").innerHTML = "❌ Leaflet failed to load. Disable ad blockers.";
+          return;
+        }
+        initMap();
+        loadSurveyList();
+        setTimeout(() => map?.invalidateSize(), 1000);
+      }, 500);
+    });
+  </script>
+  <!-- PWA Service Worker -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(reg => console.log('SW registered: ', reg))
+        .catch(err => console.log('SW registration failed: ', err));
+    });
+  }
+</script>
+</body>
+</html>
